@@ -8,7 +8,10 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   useEffect(() => {
-    SplashScreen.hideAsync();
+    const timer = setTimeout(() => {
+      SplashScreen.hideAsync();
+    }, 3000);
+    return () => clearTimeout(timer);
   }, []);
 
   return (

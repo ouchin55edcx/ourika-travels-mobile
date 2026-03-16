@@ -60,6 +60,11 @@ export default function BookingsScreen() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [newBookingAlert, setNewBookingAlert] = useState<{
+    title: string;
+    ref: string;
+    id: string;
+  } | null>(null);
 
   const fetchBookings = useCallback(async () => {
     const {
@@ -88,6 +93,63 @@ export default function BookingsScreen() {
     })();
   }, [fetchBookings]);
 
+  useEffect(() => {
+    let guideId: string | null = null;
+    let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return;
+      guideId = user.id;
+
+      const channel = supabase
+        .channel('guide_bookings_realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bookings',
+            filter: `guide_id=eq.${guideId}`,
+          },
+          async (payload) => {
+            const booking = payload.new as any;
+            if (
+              payload.eventType === 'UPDATE' &&
+              booking.guide_id === guideId &&
+              booking.guide_assigned_at
+            ) {
+              const { data: trek } = await supabase
+                .from('treks')
+                .select('title')
+                .eq('id', booking.trek_id)
+                .single();
+
+              setNewBookingAlert({
+                title: trek?.title ?? 'New trek',
+                ref: booking.booking_ref ?? '',
+                id: String(booking.id),
+              });
+
+              if (dismissTimer) clearTimeout(dismissTimer);
+              dismissTimer = setTimeout(() => setNewBookingAlert(null), 8000);
+
+              fetchBookings();
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        if (dismissTimer) clearTimeout(dismissTimer);
+        supabase.removeChannel(channel);
+      };
+    });
+
+    return () => {
+      if (dismissTimer) clearTimeout(dismissTimer);
+    };
+  }, [fetchBookings]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchBookings();
@@ -96,30 +158,78 @@ export default function BookingsScreen() {
 
   const empty = useMemo(() => !loading && bookings.length === 0, [loading, bookings.length]);
 
-  if (loading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={Colors.primary} />
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
-      {empty ? (
-        <View style={styles.emptyWrap}>
-          <View style={styles.emptyIcon}>
-            <Ionicons name="calendar-outline" size={28} color={Colors.primary} />
+      {newBookingAlert && (
+        <TouchableOpacity
+          onPress={() => {
+            const alert = newBookingAlert;
+            setNewBookingAlert(null);
+            router.push({
+              pathname: '/(guide)/bookings/[id]',
+              params: { id: alert.id, title: alert.title },
+            });
+          }}
+          style={styles.notificationBanner}
+          activeOpacity={0.9}>
+          <View style={styles.notificationIcon}>
+            <Ionicons name="notifications" size={20} color={Colors.primary} />
           </View>
-          <Text style={styles.emptyTitle}>No bookings assigned yet</Text>
-          <Text style={styles.emptySub}>When you get assigned a booking, it will show up here.</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.notificationTitle}>New booking assigned! 🎉</Text>
+            <Text style={styles.notificationBody} numberOfLines={1}>
+              {newBookingAlert.title} · {newBookingAlert.ref}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setNewBookingAlert(null)} style={{ padding: 4 }}>
+            <Ionicons name="close" size={16} color={Colors.primary} />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      )}
+
+      {loading ? (
+        <View style={styles.center}>
+          <ActivityIndicator color={Colors.primary} />
+        </View>
+      ) : empty ? (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 }}>
+          <View
+            style={{
+              width: 80,
+              height: 80,
+              borderRadius: 24,
+              backgroundColor: 'rgba(11,58,44,0.06)',
+              justifyContent: 'center',
+              alignItems: 'center',
+              marginBottom: 20,
+            }}>
+            <Ionicons name="calendar-outline" size={36} color={Colors.primary} />
+          </View>
+          <Text
+            style={{
+              fontSize: 20,
+              fontWeight: '900',
+              color: Colors.primary,
+              marginBottom: 8,
+            }}>
+            No bookings yet
+          </Text>
+          <Text
+            style={{
+              fontSize: 14,
+              color: Colors.textLight,
+              textAlign: 'center',
+              lineHeight: 22,
+            }}>
+            The admin will assign bookings to you. You'll be notified instantly.
+          </Text>
         </View>
       ) : (
         <FlatList
           data={bookings}
           keyExtractor={(item) => String(item.id)}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
-          contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
+          contentContainerStyle={{ paddingVertical: 12, paddingBottom: 24 }}
           renderItem={({ item }) => {
             const date = formatDate(item.trek_date);
             const time = item.trek_time ?? '—';
@@ -128,65 +238,100 @@ export default function BookingsScreen() {
 
             const phone = (item.tourist_phone ?? '').replace(/\D/g, '');
             const msg = encodeURIComponent(
-              `Hi ${item.tourist_name ?? ''}! I'm your guide for "${item.treks?.title ?? 'your trek'}" on ${date} at ${time}. ` +
-                `Meet at ${item.treks?.start_location ?? 'Setti Fatma'}! 🏔`
+              `Hi ${item.tourist_name ?? ''}! I'm your guide for "${
+                item.treks?.title ?? 'your trek'
+              }" on ${date} at ${time}. Meet at ${item.treks?.start_location ?? 'Setti Fatma'}! 🏔`
             );
+
+            const handleWhatsApp = () => {
+              if (!phone) return;
+              Linking.openURL(`https://wa.me/${phone}?text=${msg}`);
+            };
+
+            const titleForHeader = item.treks?.title ?? item.booking_ref ?? 'Booking';
 
             return (
               <TouchableOpacity
-                style={styles.card}
-                activeOpacity={0.85}
-                onPress={() => router.push({ pathname: '/(guide)/bookings/[id]', params: { id: String(item.id) } })}>
-                <View style={{ flexDirection: 'row', gap: 12 }}>
-                  {item.treks?.cover_image ? (
-                    <Image source={{ uri: item.treks.cover_image }} style={styles.cover} />
-                  ) : (
-                    <View style={[styles.cover, styles.coverFallback]}>
-                      <Ionicons name="image-outline" size={18} color={Colors.textLight} />
-                    </View>
-                  )}
+                style={cardStyles.card}
+                activeOpacity={0.9}
+                onPress={() =>
+                  router.push({
+                    pathname: '/(guide)/bookings/[id]',
+                    params: { id: String(item.id), title: titleForHeader },
+                  })
+                }>
+                {item.treks?.cover_image ? (
+                  <Image source={{ uri: item.treks.cover_image }} style={cardStyles.image} />
+                ) : (
+                  <View style={[cardStyles.image, { backgroundColor: '#e5e7eb' }]} />
+                )}
 
-                  <View style={{ flex: 1 }}>
-                    <Text numberOfLines={2} style={styles.title}>
-                      {item.treks?.title ?? 'Trek'}
+                <View style={cardStyles.content}>
+                  <Text style={cardStyles.trekTitle} numberOfLines={2}>
+                    {item.treks?.title ?? 'Trek'}
+                  </Text>
+
+                  <View style={cardStyles.metaRow}>
+                    <View style={cardStyles.metaItem}>
+                      <Ionicons name="calendar-outline" size={13} color={Colors.textLight} />
+                      <Text style={cardStyles.metaText}>{date}</Text>
+                    </View>
+                    <View style={cardStyles.metaDot} />
+                    <View style={cardStyles.metaItem}>
+                      <Ionicons name="time-outline" size={13} color={Colors.textLight} />
+                      <Text style={cardStyles.metaText}>{time}</Text>
+                    </View>
+                  </View>
+
+                  <View style={cardStyles.touristRow}>
+                    <View style={cardStyles.touristAvatar}>
+                      <Text style={cardStyles.touristInitial}>
+                        {item.tourist_name?.charAt(0) ?? '?'}
+                      </Text>
+                    </View>
+                    <Text style={cardStyles.touristName} numberOfLines={1}>
+                      {item.tourist_name}
                     </Text>
+                    <TouchableOpacity
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        handleWhatsApp();
+                      }}
+                      style={cardStyles.waBtn}
+                      activeOpacity={0.9}>
+                      <Ionicons name="logo-whatsapp" size={14} color="white" />
+                      <Text style={cardStyles.waBtnText}>Chat</Text>
+                    </TouchableOpacity>
+                  </View>
 
-                    <View style={styles.row}>
-                      <Ionicons name="calendar-outline" size={14} color={Colors.textLight} />
-                      <Text style={styles.rowText}>
-                        {date} · {time}
+                  <View style={cardStyles.badgesRow}>
+                    <View
+                      style={[
+                        styles.badge,
+                        { backgroundColor: statusStyle.bg, borderColor: statusStyle.border },
+                      ]}>
+                      <Text style={[styles.badgeText, { color: statusStyle.text }]}>
+                        {(item.status ?? 'pending').toString().toUpperCase()}
                       </Text>
                     </View>
-
-                    <View style={[styles.row, { justifyContent: 'space-between' }]}>
-                      <Text style={styles.touristText} numberOfLines={1}>
-                        {item.tourist_name ?? 'Tourist'}
+                    <View
+                      style={[
+                        styles.badge,
+                        { backgroundColor: payStyle.bg, borderColor: payStyle.border },
+                      ]}>
+                      <Text style={[styles.badgeText, { color: payStyle.text }]}>
+                        {(item.payment_status ?? 'unpaid').toString().toUpperCase()}
                       </Text>
-                      <TouchableOpacity
-                        onPress={() => {
-                          if (!phone) return;
-                          Linking.openURL(`https://wa.me/${phone}?text=${msg}`);
-                        }}
-                        activeOpacity={0.8}
-                        style={styles.waBtn}>
-                        <Ionicons name="logo-whatsapp" size={16} color="white" />
-                      </TouchableOpacity>
-                    </View>
-
-                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                      <View style={[styles.badge, { backgroundColor: statusStyle.bg, borderColor: statusStyle.border }]}>
-                        <Text style={[styles.badgeText, { color: statusStyle.text }]}>
-                          {(item.status ?? 'pending').toString().toUpperCase()}
-                        </Text>
-                      </View>
-                      <View style={[styles.badge, { backgroundColor: payStyle.bg, borderColor: payStyle.border }]}>
-                        <Text style={[styles.badgeText, { color: payStyle.text }]}>
-                          {(item.payment_status ?? 'unpaid').toString().toUpperCase()}
-                        </Text>
-                      </View>
                     </View>
                   </View>
                 </View>
+
+                <Ionicons
+                  name="chevron-forward"
+                  size={16}
+                  color={Colors.textLight}
+                  style={{ alignSelf: 'center', marginRight: 10 }}
+                />
               </TouchableOpacity>
             );
           }}
@@ -199,26 +344,109 @@ export default function BookingsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background },
-  card: {
-    backgroundColor: Colors.card,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 12,
-  },
-  cover: { width: 72, height: 56, borderRadius: 14, backgroundColor: '#f3f4f6' },
-  coverFallback: { alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 15, fontWeight: '900', color: Colors.text, lineHeight: 20 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 },
-  rowText: { fontSize: 12.5, color: Colors.textLight, fontWeight: '600' },
-  touristText: { fontSize: 13, color: Colors.text, fontWeight: '700', flex: 1, paddingRight: 10 },
-  waBtn: { backgroundColor: '#22c55e', width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   badge: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
   badgeText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
-  emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  emptyIcon: { width: 56, height: 56, borderRadius: 18, backgroundColor: '#e7f8f1', alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
-  emptyTitle: { fontSize: 18, fontWeight: '900', color: Colors.text, marginBottom: 6 },
-  emptySub: { fontSize: 13, color: Colors.textLight, fontWeight: '600', textAlign: 'center', lineHeight: 18, maxWidth: 300 },
+  notificationBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: Colors.mint,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    borderRadius: 16,
+    padding: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  notificationIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'white',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  notificationTitle: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: Colors.primary,
+  },
+  notificationBody: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.primary,
+    opacity: 0.7,
+    marginTop: 2,
+  },
+});
+
+const cardStyles = StyleSheet.create({
+  card: {
+    flexDirection: 'row',
+    backgroundColor: 'white',
+    borderRadius: 20,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.04)',
+  },
+  image: {
+    width: 90,
+    height: '100%',
+    minHeight: 110,
+  },
+  content: { flex: 1, padding: 14, gap: 6 },
+  trekTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: Colors.primary,
+    lineHeight: 20,
+  },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  metaText: { fontSize: 12, color: Colors.textLight, fontWeight: '500' },
+  metaDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: Colors.textLight,
+  },
+  touristRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 2,
+  },
+  touristAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  touristInitial: { color: 'white', fontSize: 10, fontWeight: '900' },
+  touristName: { flex: 1, fontSize: 12, fontWeight: '600', color: Colors.text },
+  waBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#25D366',
+    borderRadius: 100,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  waBtnText: { color: 'white', fontSize: 11, fontWeight: '700' },
+  badgesRow: { flexDirection: 'row', gap: 6, marginTop: 6 },
 });
 

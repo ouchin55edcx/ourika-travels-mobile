@@ -1,78 +1,123 @@
-import { useEffect } from 'react';
-import { Image, Text, View } from 'react-native';
-import { Tabs, useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { TouchableOpacity, View, Text } from 'react-native';
+import { Tabs, useRouter, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/lib/AuthContext';
+import { supabase } from '@/lib/supabase';
 import { Colors } from '@/lib/colors';
 
 export default function GuideLayout() {
   const { session, profile, loading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
+  const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     if (!loading && !session) router.replace('/auth/login');
   }, [session, loading, router]);
 
-  return (
-    <Tabs
-      screenOptions={{
-        headerShown: true,
-        headerStyle: { backgroundColor: Colors.primary },
-        headerTintColor: 'white',
-        headerTitleStyle: { fontWeight: '900', fontSize: 18 },
-        headerRight: () =>
-          profile?.avatar_url ? (
-            <Image
-              source={{ uri: profile.avatar_url }}
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 16,
-                marginRight: 16,
-                borderWidth: 2,
-                borderColor: Colors.mint,
-              }}
-            />
-          ) : (
-            <View
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 16,
-                marginRight: 16,
-                backgroundColor: Colors.mint,
-                justifyContent: 'center',
-                alignItems: 'center',
-              }}>
-              <Text style={{ fontSize: 13, fontWeight: '900', color: Colors.primary }}>
-                {profile?.full_name?.charAt(0) ?? 'G'}
-              </Text>
-            </View>
-          ),
-        tabBarActiveTintColor: Colors.mint,
-        tabBarInactiveTintColor: 'rgba(255,255,255,0.4)',
-        tabBarStyle: {
-          backgroundColor: Colors.primary,
-          borderTopColor: 'rgba(255,255,255,0.1)',
-          paddingBottom: 8,
-          height: 60,
+  useEffect(() => {
+    async function fetchUnread() {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      const { count } = await supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('read', false);
+      setUnreadCount(count ?? 0);
+    }
+    fetchUnread();
+
+    const channel = supabase
+      .channel('notifications_badge')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications',
         },
-        tabBarLabelStyle: { fontWeight: '700', fontSize: 11 },
-      }}>
+        () => fetchUnread()
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, []);
+
+  const HeaderRight = () => (
+    <TouchableOpacity
+      onPress={() => router.push('/(guide)/notifications')}
+      style={{ marginRight: 16, position: 'relative' }}>
+      <Ionicons name="notifications-outline" size={24} color="white" />
+      {unreadCount > 0 && (
+        <View
+          style={{
+            position: 'absolute',
+            top: -4,
+            right: -4,
+            width: 18,
+            height: 18,
+            borderRadius: 9,
+            backgroundColor: Colors.mint,
+            justifyContent: 'center',
+            alignItems: 'center',
+            borderWidth: 2,
+            borderColor: Colors.primary,
+          }}>
+          <Text
+            style={{
+              fontSize: 9,
+              fontWeight: '900',
+              color: Colors.primary,
+            }}>
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+
+  const screenOptions = {
+    headerShown: true,
+    headerStyle: { backgroundColor: Colors.primary },
+    headerTintColor: 'white',
+    headerTitleStyle: { fontWeight: '900' as const, fontSize: 17 },
+    headerTitleAlign: 'left' as const,
+    headerRight: () => <HeaderRight />,
+    tabBarActiveTintColor: Colors.mint,
+    tabBarInactiveTintColor: 'rgba(255,255,255,0.4)',
+    tabBarStyle: {
+      backgroundColor: Colors.primary,
+      borderTopColor: 'rgba(255,255,255,0.1)',
+      paddingBottom: 8,
+      height: 62,
+    },
+    tabBarLabelStyle: { fontWeight: '700' as const, fontSize: 11 },
+  };
+
+  return (
+    <Tabs screenOptions={screenOptions}>
+      <Tabs.Screen
+        name="community/index"
+        options={{
+          title: 'Community',
+          tabBarLabel: 'Community',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="people-outline" size={size} color={color} />
+          ),
+        }}
+      />
       <Tabs.Screen
         name="bookings/index"
         options={{
           title: 'My Bookings',
           tabBarLabel: 'Bookings',
-          tabBarIcon: ({ color, size }) => <Ionicons name="calendar" size={size} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="treks/index"
-        options={{
-          title: 'Treks',
-          tabBarLabel: 'Treks',
-          tabBarIcon: ({ color, size }) => <Ionicons name="map" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="calendar-outline" size={size} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
@@ -80,7 +125,29 @@ export default function GuideLayout() {
         options={{
           title: 'My Profile',
           tabBarLabel: 'Profile',
-          tabBarIcon: ({ color, size }) => <Ionicons name="person" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="person-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="bookings/[id]"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
+        name="treks/index"
+        options={{
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="notifications"
+        options={{
+          href: null,
+          headerShown: false,
         }}
       />
     </Tabs>

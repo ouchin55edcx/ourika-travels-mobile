@@ -54,11 +54,14 @@ export default function LoginScreen() {
         setError('This app is for guides only. Please use the website.');
         setLoading(false);
         return;
+        }
       }
-    }
 
-    setLoading(false);
-    router.replace('/(guide)/bookings');
+      // After successful login, extend session
+      await supabase.auth.refreshSession();
+
+      setLoading(false);
+      router.replace('/(guide)/bookings');
   }
 
   async function handleGoogleLogin() {
@@ -106,6 +109,8 @@ export default function LoginScreen() {
         contentContainerStyle={{ flexGrow: 1 }}
         keyboardShouldPersistTaps="handled">
         <View style={styles.topPanel}>
+          <View style={styles.bgCircle1} />
+          <View style={styles.bgCircle2} />
           <View style={styles.logoBox}>
             <Text style={styles.logoText}>OT</Text>
           </View>
@@ -208,6 +213,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     alignItems: 'center',
     gap: 8,
+    overflow: 'hidden',
+  },
+  bgCircle1: {
+    position: 'absolute',
+    top: -60,
+    right: -60,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: 'rgba(0,239,157,0.08)',
+  },
+  bgCircle2: {
+    position: 'absolute',
+    bottom: -40,
+    left: -40,
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: 'rgba(0,239,157,0.05)',
   },
   logoBox: {
     width: 72,
@@ -229,6 +253,11 @@ const styles = StyleSheet.create({
     padding: 28,
     paddingTop: 32,
     minHeight: 480,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 12,
+    elevation: 6,
   },
   cardTitle: { fontSize: 24, fontWeight: '900', color: Colors.text, marginBottom: 4 },
   cardSubtitle: { fontSize: 14, color: Colors.textLight, marginBottom: 24 },
@@ -258,10 +287,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1.5,
     borderColor: Colors.border,
-    borderRadius: 14,
+    borderRadius: 16,
     paddingHorizontal: 14,
-    paddingVertical: 12,
     backgroundColor: '#f9fafb',
+    height: 56,
   },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, fontSize: 15, color: Colors.text, fontWeight: '500' },
@@ -271,8 +300,15 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center',
     marginTop: 8,
+    height: 56,
+    justifyContent: 'center',
   },
-  primaryBtnText: { color: 'white', fontSize: 16, fontWeight: '900' },
+  primaryBtnText: {
+    color: 'white',
+    fontSize: 17,
+    fontWeight: '900',
+    letterSpacing: -0.3,
+  },
   divider: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -287,12 +323,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 10,
     borderWidth: 1.5,
-    borderColor: Colors.border,
+    borderColor: Colors.primary,
     borderRadius: 100,
     paddingVertical: 14,
     backgroundColor: 'white',
   },
   googleBtnText: { fontSize: 15, fontWeight: '700', color: Colors.primary },
-  registerText: { fontSize: 13, color: Colors.textLight, textAlign: 'center' },
+  registerText: {
+    fontSize: 13,
+    color: Colors.mint,
+    textAlign: 'center',
+    textDecorationLine: 'underline',
+  },
 });
 

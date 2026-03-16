@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Linking,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,7 +12,9 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import QRCode from 'react-native-qrcode-svg';
+import { randomUUID } from '@/lib/uuid';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/lib/colors';
 
@@ -60,10 +64,15 @@ function badgeStyle(kind: 'status' | 'payment', value?: string | null) {
 }
 
 export default function BookingDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, title } = useLocalSearchParams<{ id: string; title?: string }>();
   const router = useRouter();
   const [booking, setBooking] = useState<Booking | null>(null);
   const [loading, setLoading] = useState(true);
+  const navigation = useNavigation();
+  const [qrCodes, setQrCodes] = useState<any[]>([]);
+  const [generatingQr, setGeneratingQr] = useState(false);
+  const [showQr, setShowQr] = useState<string | null>(null);
+  const APP_URL = process.env.EXPO_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
   useEffect(() => {
     (async () => {
@@ -71,9 +80,22 @@ export default function BookingDetailScreen() {
       setLoading(true);
       const { data } = await supabase.from('bookings').select('*, treks(*)').eq('id', id).single();
       setBooking((data as Booking) ?? null);
+
+      const { data: qrs } = await supabase
+        .from('review_qr_codes')
+        .select('*')
+        .eq('booking_id', id)
+        .order('created_at', { ascending: false });
+      setQrCodes(qrs ?? []);
       setLoading(false);
     })();
   }, [id]);
+
+  useEffect(() => {
+    if (title) {
+      navigation.setOptions({ title: String(title) });
+    }
+  }, [title, navigation]);
 
   const date = useMemo(() => formatDate(booking?.trek_date), [booking?.trek_date]);
   const time = booking?.trek_time ?? '—';
@@ -84,6 +106,43 @@ export default function BookingDetailScreen() {
     `Hi ${booking?.tourist_name ?? ''}! Booking ${booking?.booking_ref ?? ''} — "${booking?.treks?.title ?? 'your trek'}" on ${date} at ${time}. ` +
       `Meeting point: ${meet}. 🏔`
   );
+
+  async function generateQrCode() {
+    if (!booking?.id || !(booking as any).trek_id) return;
+    if (qrCodes.length >= 3) {
+      Alert.alert('Limit reached', 'Maximum 3 QR codes per booking.');
+      return;
+    }
+    setGeneratingQr(true);
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setGeneratingQr(false);
+      return;
+    }
+
+    const token = randomUUID().replace(/-/g, '');
+    const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    const { data, error } = await supabase
+      .from('review_qr_codes')
+      .insert({
+        booking_id: booking.id,
+        guide_id: user.id,
+        trek_id: (booking as any).trek_id,
+        token,
+        expires_at: expires.toISOString(),
+      })
+      .select()
+      .single();
+
+    if (!error && data) {
+      setQrCodes((prev) => [data, ...prev]);
+      setShowQr(`${APP_URL}/review/${token}`);
+    }
+    setGeneratingQr(false);
+  }
 
   if (loading) {
     return (
@@ -111,9 +170,20 @@ export default function BookingDetailScreen() {
     <View style={{ flex: 1, backgroundColor: Colors.background }}>
       <View style={styles.header}>
         {booking.treks?.cover_image ? (
-          <Image source={{ uri: booking.treks.cover_image }} style={styles.headerImage} />
+          <Image
+            source={{ uri: booking.treks.cover_image }}
+            style={{ width: '100%', height: 200 }}
+            resizeMode="cover"
+          />
         ) : (
-          <View style={[styles.headerImage, { backgroundColor: '#e5e7eb', alignItems: 'center', justifyContent: 'center' }]}>
+          <View
+            style={{
+              width: '100%',
+              height: 200,
+              backgroundColor: '#e5e7eb',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
             <Ionicons name="image-outline" size={28} color={Colors.textLight} />
           </View>
         )}
@@ -129,76 +199,281 @@ export default function BookingDetailScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 28 }}>
-        <View style={styles.statusRow}>
-          <Text style={styles.refText}>{booking.booking_ref ?? `#${booking.id}`}</Text>
-          <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <View style={[styles.badge, { backgroundColor: status.bg, borderColor: status.border }]}>
-              <Text style={[styles.badgeText, { color: status.text }]}>{(booking.status ?? 'pending').toUpperCase()}</Text>
-            </View>
-            <View style={[styles.badge, { backgroundColor: payment.bg, borderColor: payment.border }]}>
-              <Text style={[styles.badgeText, { color: payment.text }]}>
-                {(booking.payment_status ?? 'unpaid').toUpperCase()}
-              </Text>
+      <ScrollView contentContainerStyle={{ paddingBottom: 28 }}>
+        <View style={{ paddingHorizontal: 16, paddingTop: 14 }}>
+          <View style={styles.statusRow}>
+            <Text style={styles.refText}>{booking.booking_ref ?? `#${booking.id}`}</Text>
+            <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <View style={[styles.badge, { backgroundColor: status.bg, borderColor: status.border }]}>
+                <Text style={[styles.badgeText, { color: status.text }]}>
+                  {(booking.status ?? 'pending').toUpperCase()}
+                </Text>
+              </View>
+              <View style={[styles.badge, { backgroundColor: payment.bg, borderColor: payment.border }]}>
+                <Text style={[styles.badgeText, { color: payment.text }]}>
+                  {(booking.payment_status ?? 'unpaid').toUpperCase()}
+                </Text>
+              </View>
             </View>
           </View>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Trip details</Text>
+          <Text style={styles.sectionTitle}>Trip Details</Text>
           <InfoRow icon="calendar-outline" label="Date" value={date} />
           <InfoRow icon="time-outline" label="Time" value={time} />
-          <InfoRow icon="walk-outline" label="Duration" value={String(booking.treks?.duration ?? '—')} />
-          <InfoRow icon="location-outline" label="Start" value={meet} />
+          <InfoRow icon="hourglass-outline" label="Duration" value={String(booking.treks?.duration ?? '—')} />
+          <InfoRow icon="location-outline" label="Meeting point" value={meet} />
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Tourists</Text>
-          <InfoRow icon="person-outline" label="Name" value={booking.tourist_name ?? '—'} />
+          <Text style={styles.sectionTitle}>Your Tourist</Text>
+          <View style={styles.touristHeaderRow}>
+            <View style={styles.touristAvatar}>
+              <Text style={styles.touristInitial}>
+                {booking.tourist_name?.trim().charAt(0).toUpperCase() ?? '?'}
+              </Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.touristName}>{booking.tourist_name ?? '—'}</Text>
+              <Text style={styles.touristMeta}>{booking.tourist_email ?? booking.tourist_phone ?? '—'}</Text>
+            </View>
+          </View>
           <InfoRow icon="call-outline" label="Phone" value={booking.tourist_phone ?? '—'} />
           <InfoRow icon="mail-outline" label="Email" value={booking.tourist_email ?? '—'} />
           <InfoRow
             icon="people-outline"
-            label="Group"
+            label="Group size"
             value={`${booking.adults ?? 0} adults · ${booking.children ?? 0} children`}
           />
+
+          <TouchableOpacity
+            activeOpacity={0.85}
+            style={[styles.waCta, !phone && { opacity: 0.5 }]}
+            disabled={!phone}
+            onPress={() => Linking.openURL(`https://wa.me/${phone}?text=${waMsg}`)}>
+            <Ionicons name="logo-whatsapp" size={18} color="white" />
+            <Text style={styles.waCtaText}>Contact tourist on WhatsApp</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={[styles.section, { marginTop: 4 }]}>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: 10,
+            }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Ionicons name="qr-code-outline" size={18} color={Colors.primary} />
+              <Text style={styles.sectionTitle}>Review QR Codes</Text>
+            </View>
+            <Text
+              style={{
+                fontSize: 11,
+                color: Colors.textLight,
+                fontWeight: '700',
+              }}>
+              {qrCodes.length}/3 used
+            </Text>
+          </View>
+
+          <Text
+            style={{
+              fontSize: 12,
+              color: Colors.textLight,
+              fontWeight: '500',
+              lineHeight: 17,
+              marginBottom: 12,
+            }}>
+            Give tourist a QR code to leave a review. Max 3 per booking. Expires in 7 days.
+          </Text>
+
+          {qrCodes.map((qr, i) => (
+            <TouchableOpacity
+              key={qr.id}
+              onPress={() => !qr.used && setShowQr(`${APP_URL}/review/${qr.token}`)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 10,
+                padding: 10,
+                borderRadius: 12,
+                marginBottom: 6,
+                backgroundColor: qr.used ? '#f9fafb' : '#f0fdf4',
+                borderWidth: 1,
+                borderColor: qr.used ? Colors.border : '#a7f3d0',
+                opacity: qr.used ? 0.6 : 1,
+              }}>
+              <Ionicons
+                name={qr.used ? 'checkmark-circle' : 'qr-code-outline'}
+                size={18}
+                color={qr.used ? Colors.textLight : Colors.primary}
+              />
+              <View style={{ flex: 1 }}>
+                <Text
+                  style={{
+                    fontSize: 12,
+                    fontWeight: '700',
+                    color: qr.used ? Colors.textLight : Colors.text,
+                  }}>
+                  QR #{i + 1} — {qr.used ? '✓ Used' : 'Active'}
+                </Text>
+                <Text style={{ fontSize: 11, color: Colors.textLight }}>
+                  Expires{' '}
+                  {new Date(qr.expires_at).toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                  })}
+                </Text>
+              </View>
+              {!qr.used && (
+                <Ionicons name="chevron-forward" size={14} color={Colors.textLight} />
+              )}
+            </TouchableOpacity>
+          ))}
+
+          {qrCodes.length < 3 && (
+            <TouchableOpacity
+              onPress={generateQrCode}
+              disabled={generatingQr}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                backgroundColor: Colors.primary,
+                borderRadius: 14,
+                padding: 14,
+                marginTop: 4,
+                opacity: generatingQr ? 0.7 : 1,
+              }}>
+              {generatingQr ? (
+                <ActivityIndicator size="small" color={Colors.mint} />
+              ) : (
+                <Ionicons name="add-circle-outline" size={18} color={Colors.mint} />
+              )}
+              <Text
+                style={{
+                  color: Colors.mint,
+                  fontWeight: '900',
+                  fontSize: 14,
+                }}>
+                {generatingQr ? 'Generating...' : 'Generate review QR'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Pricing</Text>
+          <Text style={styles.sectionTitle}>Booking Info</Text>
+          <InfoRow icon="pricetag-outline" label="Reference" value={booking.booking_ref ?? `#${booking.id}`} />
           <InfoRow
-            icon="pricetag-outline"
-            label="Per adult"
-            value={booking.treks?.price_per_adult != null ? String(booking.treks.price_per_adult) : '—'}
-          />
-          <InfoRow
-            icon="pricetag-outline"
-            label="Per child"
-            value={booking.treks?.price_per_child != null ? String(booking.treks.price_per_child) : '—'}
+            icon="person-outline"
+            label="Type"
+            value={(booking as any).booking_type ?? '—'}
           />
           <InfoRow
             icon="cash-outline"
-            label="Total"
+            label="Total price"
             value={booking.total_price != null ? String(booking.total_price) : '—'}
           />
         </View>
 
-        <TouchableOpacity
-          activeOpacity={0.85}
-          style={[styles.waCta, !phone && { opacity: 0.5 }]}
-          disabled={!phone}
-          onPress={() => Linking.openURL(`https://wa.me/${phone}?text=${waMsg}`)}>
-          <Ionicons name="logo-whatsapp" size={18} color="white" />
-          <Text style={styles.waCtaText}>Contact tourist on WhatsApp</Text>
-        </TouchableOpacity>
-
         {!!booking.special_requests && (
-          <View style={[styles.section, { borderColor: '#fde68a', backgroundColor: '#fffbeb' }]}>
+          <View style={[styles.section, { borderColor: '#fde68a', backgroundColor: '#fffbeb', marginTop: 0 }]}>
             <Text style={[styles.sectionTitle, { color: '#92400e' }]}>Special requests</Text>
-            <Text style={{ color: '#92400e', fontWeight: '700', lineHeight: 18 }}>{booking.special_requests}</Text>
+            <Text style={{ color: '#92400e', fontWeight: '700', lineHeight: 18 }}>
+              ⚠️ {booking.special_requests}
+            </Text>
           </View>
         )}
       </ScrollView>
+
+      <Modal
+        visible={!!showQr}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowQr(null)}>
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: Colors.primary,
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 32,
+          }}>
+          <TouchableOpacity
+            onPress={() => setShowQr(null)}
+            style={{ position: 'absolute', top: 52, right: 24 }}>
+            <Ionicons name="close" size={28} color="white" />
+          </TouchableOpacity>
+
+          <Text
+            style={{
+              color: 'white',
+              fontSize: 20,
+              fontWeight: '900',
+              marginBottom: 6,
+              textAlign: 'center',
+            }}>
+            Scan to leave a review
+          </Text>
+          <Text
+            style={{
+              color: 'rgba(255,255,255,0.6)',
+              fontSize: 13,
+              marginBottom: 40,
+              textAlign: 'center',
+            }}>
+            Show this QR to your tourist
+          </Text>
+
+          {showQr && (
+            <View
+              style={{
+                padding: 20,
+                backgroundColor: 'white',
+                borderRadius: 24,
+              }}>
+              <QRCode value={showQr} size={220} color={Colors.primary} backgroundColor="white" />
+            </View>
+          )}
+
+          <Text
+            style={{
+              color: 'rgba(255,255,255,0.4)',
+              fontSize: 11,
+              marginTop: 24,
+              textAlign: 'center',
+            }}>
+            One-time use · Expires in 7 days
+          </Text>
+
+          <View
+            style={{
+              marginTop: 32,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              backgroundColor: 'rgba(0,239,157,0.15)',
+              borderRadius: 100,
+              paddingHorizontal: 16,
+              paddingVertical: 10,
+            }}>
+            <Ionicons name="mountain-outline" size={16} color={Colors.mint} />
+            <Text
+              style={{
+                color: Colors.mint,
+                fontWeight: '700',
+                fontSize: 13,
+              }}>
+              {booking?.treks?.title ?? 'Trek experience'}
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -219,8 +494,7 @@ function InfoRow({ icon, label, value }: { icon: any; label: string; value: stri
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background, padding: 16 },
-  header: { height: 200, backgroundColor: '#111827' },
-  headerImage: { width: '100%', height: '100%' },
+  header: { backgroundColor: '#111827' },
   headerOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)' },
   backBtn: {
     position: 'absolute',
@@ -242,7 +516,7 @@ const styles = StyleSheet.create({
   section: {
     backgroundColor: Colors.card,
     borderRadius: 18,
-    padding: 14,
+    padding: 16,
     borderWidth: 1,
     borderColor: Colors.border,
     marginBottom: 12,
@@ -260,9 +534,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 10,
-    marginTop: 6,
-    marginBottom: 14,
+    marginTop: 14,
+    marginBottom: 0,
   },
   waCtaText: { color: 'white', fontWeight: '900', fontSize: 15 },
+  touristHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  touristAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  touristInitial: { color: 'white', fontWeight: '900', fontSize: 16 },
+  touristName: { fontSize: 15, fontWeight: '900', color: Colors.text },
+  touristMeta: { fontSize: 12.5, fontWeight: '600', color: Colors.textLight },
 });
 

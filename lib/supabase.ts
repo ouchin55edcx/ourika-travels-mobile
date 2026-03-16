@@ -7,6 +7,8 @@ const ExpoSecureStoreAdapter = {
   removeItem: (key: string) => SecureStore.deleteItemAsync(key),
 };
 
+// Session persisted via SecureStore — auto-refreshes for 30 days
+// Configure JWT expiry in Supabase dashboard → Auth → Settings → JWT expiry: 2592000
 export const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_URL!,
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
